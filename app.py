@@ -45,17 +45,44 @@ EMIRATES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Fujaira
 AGE_GROUPS = ["18-24", "25-34", "35-44", "45-54", "55+"]
 FESTIVE_SEASONS = ["White Friday", "DSF", "Ramadan", "Back to School"]
 
-# Each category always gets the SAME colour in every chart, so viewers
-# learn the colours once and can read every chart faster.
+# ---- Traffic-light colours ----
+# The whole dashboard uses red, amber and green.
+# Change these three lines and every chart changes with them.
+RED = "#D93025"
+AMBER = "#F2A900"
+GREEN = "#1E8E3E"
+GREY = "#5F6368"                   # neutral, for things that are neither good nor bad
+RAG_SCALE = [RED, AMBER, GREEN]    # low -> high, used by the heatmap
+
+# Traffic lights normally MEAN something. We use them in two ways:
+#
+# 1) RANKING: compare items with each other.
+#    Top third = green, middle third = amber, bottom third = red.
+RANK_COLORS = {"Top third": GREEN, "Middle third": AMBER, "Bottom third": RED}
+
+# 2) TARGETS: compare profit margin with fixed targets.
+#    25% or more = green, 15-25% = amber, below 15% = red.
+MARGIN_GREEN_FROM = 25
+MARGIN_AMBER_FROM = 15
+HEALTHY = f"Healthy ({MARGIN_GREEN_FROM}%+)"
+WATCH = f"Watch ({MARGIN_AMBER_FROM}-{MARGIN_GREEN_FROM}%)"
+WEAK = f"Weak (below {MARGIN_AMBER_FROM}%)"
+MARGIN_COLORS = {HEALTHY: GREEN, WATCH: AMBER, WEAK: RED}
+MARGIN_BADGES = {HEALTHY: "🟢", WATCH: "🟡", WEAK: "🔴"}      # for tables
+
+# Charts that show each category separately (e.g. the trend lines) need six
+# colours, so we use two shades of each traffic-light colour, grouped by
+# department: food = greens, lifestyle = ambers, big-ticket items = reds.
+# In these charts the colour only tells you WHICH category it is, not good or bad.
 CATEGORY_COLORS = {
-    "Fresh": "#2E9E5B",
-    "Grocery": "#E0A526",
-    "Fashion": "#C2408A",
-    "Home Decor": "#2A9D8F",
-    "Electronics": "#3A6FD8",
-    "Furniture": "#8C5A3C",
+    "Fresh": GREEN,
+    "Grocery": "#7CB342",
+    "Fashion": AMBER,
+    "Home Decor": "#B8740A",
+    "Electronics": RED,
+    "Furniture": "#8B1A12",
 }
-OTHER_COLORS = ["#3A6FD8", "#2A9D8F", "#E0A526", "#C2408A"]   # for charts not split by category
+OTHER_COLORS = [GREEN, AMBER, RED, "#7CB342"]   # for other charts with a few groups (e.g. the donut)
 CHART_HEIGHT = 380                                          # same height for every chart
 
 # The measures a user can choose, and the column each one comes from.
@@ -138,6 +165,30 @@ def summarise(data, group_by, metric):
     else:
         result = groups[METRIC_COLUMNS[metric]].sum()
     return result.rename(metric).reset_index()
+
+
+def rank_status(values):
+    """Traffic light by RANKING: label each value top third, middle third or bottom third."""
+    ranks = values.rank(method="first", ascending=False)   # 1 = the biggest value
+    labels = []
+    for rank in ranks:
+        position = (rank - 1) / len(values)   # 0.0 for the best, close to 1.0 for the worst
+        if position < 1 / 3:
+            labels.append("Top third")
+        elif position < 2 / 3:
+            labels.append("Middle third")
+        else:
+            labels.append("Bottom third")
+    return labels
+
+
+def margin_status(margin):
+    """Traffic light by TARGET: compare one profit margin (%) with the fixed targets."""
+    if margin >= MARGIN_GREEN_FROM:
+        return HEALTHY
+    if margin >= MARGIN_AMBER_FROM:
+        return WATCH
+    return WEAK
 
 
 def card_header(title, wide=False):
@@ -270,9 +321,12 @@ def sales_by_category_card():
             return no_data_message()
 
         summary = summarise(data, "Category", metric)
+        # Traffic light by ranking: best third green, middle amber, weakest third red
+        summary["Rank"] = rank_status(summary[metric])
         fig = px.bar(summary, x=metric, y="Category", orientation="h", text_auto=".3s",
-                     color="Category", color_discrete_map=CATEGORY_COLORS)
-        fig.update_layout(showlegend=False, yaxis_title=None)
+                     color="Rank", color_discrete_map=RANK_COLORS,
+                     category_orders={"Rank": list(RANK_COLORS)})
+        fig.update_layout(yaxis_title=None)
         fig.update_yaxes(categoryorder="total ascending")   # biggest bar at the top
         st.plotly_chart(style(fig), key="chart_category")
 
@@ -306,9 +360,8 @@ def emirate_heatmap_card():
         fig = px.imshow(
             grid, aspect="auto",
             text_auto=".1f" if is_margin else ".3s",
-            # Margin can be negative, so use red-yellow-green centred on 0
-            color_continuous_scale="RdYlGn" if is_margin else "Greens",
-            color_continuous_midpoint=0 if is_margin else None,
+            # Traffic-light scale: lowest cell red, middle amber, highest green
+            color_continuous_scale=RAG_SCALE,
             labels=dict(x="", y="", color=""),
         )
         st.plotly_chart(style(fig), key="chart_heatmap")
@@ -341,7 +394,7 @@ def trend_card():
         summary = summarise(data, ["Period", "Category"] if split else "Period", metric)
         fig = px.line(summary, x="Period", y=metric, markers=grain != "Daily",
                       color="Category" if split else None, category_orders={"Category": CATEGORIES},
-                      color_discrete_map=CATEGORY_COLORS, color_discrete_sequence=["#34495E"])
+                      color_discrete_map=CATEGORY_COLORS, color_discrete_sequence=[GREEN])
         fig.update_layout(xaxis_title=None)
 
         if show_seasons:
@@ -351,7 +404,7 @@ def trend_card():
             for season in FESTIVE_SEASONS:
                 days = everything.loc[everything["Promotion"] == season, "Date"]
                 if days.max() >= first_shown and days.min() <= last_shown:   # only if it's in view
-                    fig.add_vrect(x0=days.min(), x1=days.max(), fillcolor="#E0A526", opacity=0.12,
+                    fig.add_vrect(x0=days.min(), x1=days.max(), fillcolor=GREY, opacity=0.10,
                                   line_width=0, annotation_text=season, annotation_position="top left",
                                   annotation_font_size=11)
 
@@ -410,11 +463,19 @@ def promotion_card():
         # = a less reliable bar, and it is honest to show that.
         summary["Promotion"] = summary["Promotion"] + "<br>(n=" + summary["Transactions"].astype(str) + ")"
 
-        # Reshape to 'long' format so Plotly can draw two bars side by side
-        long = summary.melt(id_vars="Promotion", value_vars=["Avg. discount (%)", "Profit margin (%)"],
-                            var_name="Measure", value_name="Percent")
-        fig = px.bar(long, x="Promotion", y="Percent", color="Measure", barmode="group", text_auto=".1f",
-                     color_discrete_map={"Avg. discount (%)": "#E0A526", "Profit margin (%)": "#2E9E5B"})
+        # Bars = profit margin, coloured by the traffic-light targets
+        summary["Margin status"] = summary["Profit margin (%)"].apply(margin_status)
+        fig = px.bar(summary, x="Promotion", y="Profit margin (%)", text_auto=".1f",
+                     color="Margin status", color_discrete_map=MARGIN_COLORS,
+                     category_orders={"Margin status": list(MARGIN_COLORS)},
+                     hover_data={"Avg. discount (%)": ":.1f", "Transactions": True})
+
+        # Grey line = average discount, drawn on top of the bars
+        fig.add_scatter(x=summary["Promotion"], y=summary["Avg. discount (%)"], name="Avg. discount (%)",
+                        mode="lines+markers", line=dict(color=GREY, width=2, dash="dot"))
+
+        # Keep the promotions in order of discount (smallest to largest)
+        fig.update_xaxes(categoryorder="array", categoryarray=summary["Promotion"])
         fig.update_layout(xaxis_title=None, yaxis_title="%")
         st.plotly_chart(style(fig), key="chart_promo")
 
@@ -442,7 +503,7 @@ def customer_card():
         fig = px.bar(summary, x="Age_Group", y=metric, color="Gender", barmode="group",
                      text_auto=".2f" if metric.startswith("Average") else ".3s",
                      category_orders={"Age_Group": AGE_GROUPS},
-                     color_discrete_map={"Female": "#4C5B7A", "Male": "#A3B4CC"},
+                     color_discrete_map={"Female": GREEN, "Male": AMBER},
                      labels={"Age_Group": "Age group"})
         st.plotly_chart(style(fig), key="chart_customers")
 
@@ -474,19 +535,27 @@ def top_products_card():
         table["Profit margin (%)"] = table["Profit (AED)"] / table["Net sales (AED)"] * 100
         table = table.sort_values(sort_by, ascending=False).head(top_n).reset_index()
 
+        # Show the margin with a traffic-light dot in front, e.g. "🔴 13.2%".
+        # (The plain number column is kept for sorting but hidden below.)
+        badges = table["Profit margin (%)"].apply(margin_status).map(MARGIN_BADGES)
+        table["Margin"] = badges + " " + table["Profit margin (%)"].round(1).astype(str) + "%"
+
         st.dataframe(
             table, hide_index=True, height=CHART_HEIGHT,
+            column_order=["Sub_Category", "Category", "Net sales (AED)", "Profit (AED)",
+                          "Units sold", "Transactions", "Margin"],
             column_config={
                 "Sub_Category": st.column_config.TextColumn("Sub-category", pinned=True),
                 "Category": st.column_config.TextColumn(width="small"),
                 # A bar inside the cell makes the biggest sellers easy to spot
                 "Net sales (AED)": st.column_config.ProgressColumn(
-                    "Net sales", format="compact", color="#2E9E5B", width="small",
+                    "Net sales", format="compact", color=GREEN, width="small",
                     min_value=0, max_value=float(table["Net sales (AED)"].max())),
                 "Profit (AED)": st.column_config.NumberColumn("Profit", format="compact", width="small"),
                 "Units sold": st.column_config.NumberColumn("Units", width="small"),
                 "Transactions": st.column_config.NumberColumn("Txns", width="small"),
-                "Profit margin (%)": st.column_config.NumberColumn("Margin", format="%.1f%%", width="small"),
+                "Margin": st.column_config.TextColumn(
+                    width="small", help=f"🟢 {HEALTHY}, 🟡 {WATCH}, 🔴 {WEAK}"),
             },
         )
 
